@@ -1,13 +1,13 @@
 import pg from 'pg';
 import { env } from "./env.js";
 
-    export const { Pool } = pg;
+    const { Pool } = pg;
 
-    const pool = new Pool({
+    export const pool = new Pool({
     connectionString: env.postgresUri
     });
 
-async function createTables(){
+    export async function createTables(){
     const client = await pool.connect();
     try{
         await client.query("BEGIN");
