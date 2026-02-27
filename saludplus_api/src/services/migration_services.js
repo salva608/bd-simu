@@ -3,10 +3,10 @@ import { resolve } from 'path';
 import { parse } from 'csv-parse/sync';
 import { pool } from '../config/postgres.js';
 import { env } from '../config/env.js';
-import { json } from 'stream/consumers';
+import { PatientHistory } from '../config/mongodb.js';
 
 export async function migrate(clearBefore = false) {
-    try{
+    try {
         const csvPath = resolve(env.fileDataCsv);
         let fileContent = await readFile(csvPath, 'utf-8');
         const rows = parse(fileContent, {
@@ -15,163 +15,184 @@ export async function migrate(clearBefore = false) {
             trim: true,
         });
 
-        console.log(rows);
         console.log(`Read ${rows.length} rows from CSV file`);
 
-        // --- Clear existing data if requested
-        if(clearBefore){
+        if (clearBefore) {
             await pool.query('BEGIN');
-            await pool.query(`TRUNCATE TABLE patients, 
-                treatments, insurances, doctors, appointments CASCADE`);
+            await pool.query(`
+                TRUNCATE TABLE patients, 
+                treatments, insurances, doctors, appointments 
+                CASCADE
+            `);
             await pool.query('COMMIT');
-            console.log(' previous data cleared successfully');
+            console.log('Previous Postgres data cleared');
 
+            await PatientHistory.deleteMany({});
+            console.log('Previous MongoDB data cleared');
         }
 
-        // ── 3. Insert uniques entities in PostgreSQL 
-        const patientEmails  = new Set();
-        const doctorEmails   = new Set();
-        const treatmentCodes = new Set();
-        const insuranceProviders = new Set();
-        const appointmentIds  = new Set();
-
+        // ================================
+        // POSTGRES MIGRATION
+        // ================================
 
         for (const row of rows) {
-    console.log(`processing row: ${JSON.stringify(row)}`);
 
-    /* =========================
-       1️⃣ PATIENT
-    ========================= */
+            // ---- PATIENT
+            const { rows: patientRows } = await pool.query(
+                `SELECT id FROM patients WHERE email = $1`,
+                [row.patient_email]
+            );
 
-    const { rows: patientRows } = await pool.query(
-        `SELECT id FROM patients WHERE email = $1`,
-        [row.patient_email]
-    );
+            let patientId;
 
-    let patientId;
+            if (patientRows.length > 0) {
+                patientId = patientRows[0].id;
+            } else {
+                const { rows: newPatient } = await pool.query(
+                    `INSERT INTO patients (email, name, phone, address, created_at, updated_at)
+                     VALUES ($1, $2, $3, $4, NOW(), NOW())
+                     RETURNING id`,
+                    [row.patient_email, row.patient_name, row.patient_phone, row.patient_address]
+                );
 
-    if (patientRows.length > 0) {
-        patientId = patientRows[0].id;
-    } else {
-        const { rows: newPatient } = await pool.query(
-            `INSERT INTO patients (email, name, phone, address, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, NOW(), NOW())
-             RETURNING id`,
-            [row.patient_email, row.patient_name, row.patient_phone, row.patient_address]
-        );
+                patientId = newPatient[0].id;
+            }
 
-        patientId = newPatient[0].id;
-    }
+            // ---- DOCTOR
+            const { rows: doctorRows } = await pool.query(
+                `SELECT id FROM doctors WHERE email = $1`,
+                [row.doctor_email]
+            );
 
-    /* =========================
-       2️⃣ DOCTOR
-    ========================= */
+            let doctorId;
 
-    const { rows: doctorRows } = await pool.query(
-        `SELECT id FROM doctors WHERE email = $1`,
-        [row.doctor_email]
-    );
+            if (doctorRows.length > 0) {
+                doctorId = doctorRows[0].id;
+            } else {
+                const { rows: newDoctor } = await pool.query(
+                    `INSERT INTO doctors (email, name, specialty, created_at, updated_at)
+                     VALUES ($1, $2, $3, NOW(), NOW())
+                     RETURNING id`,
+                    [row.doctor_email, row.doctor_name, row.specialty]
+                );
 
-    let doctorId;
+                doctorId = newDoctor[0].id;
+            }
 
-    if (doctorRows.length > 0) {
-        doctorId = doctorRows[0].id;
-    } else {
-        const { rows: newDoctor } = await pool.query(
-            `INSERT INTO doctors (email, name, specialty, created_at, updated_at)
-             VALUES ($1, $2, $3, NOW(), NOW())
-             RETURNING id`,
-            [row.doctor_email, row.doctor_name, row.specialty]
-        );
+            // ---- TREATMENT
+            const { rows: treatmentRows } = await pool.query(
+                `SELECT id FROM treatments WHERE code = $1`,
+                [row.treatment_code]
+            );
 
-        doctorId = newDoctor[0].id;
-    }
+            let treatmentId;
 
-    /* =========================
-       3️⃣ TREATMENT
-    ========================= */
+            if (treatmentRows.length > 0) {
+                treatmentId = treatmentRows[0].id;
+            } else {
+                const { rows: newTreatment } = await pool.query(
+                    `INSERT INTO treatments (code, description, cost, created_at, updated_at)
+                     VALUES ($1, $2, $3, NOW(), NOW())
+                     RETURNING id`,
+                    [row.treatment_code, row.treatment_description, row.treatment_cost]
+                );
 
-    const { rows: treatmentRows } = await pool.query(
-        `SELECT id FROM treatments WHERE code = $1`,
-        [row.treatment_code]
-    );
+                treatmentId = newTreatment[0].id;
+            }
 
-    let treatmentId;
+            // ---- INSURANCE
+            const { rows: insuranceRows } = await pool.query(
+                `SELECT id FROM insurances WHERE name = $1`,
+                [row.insurance_provider]
+            );
 
-    if (treatmentRows.length > 0) {
-        treatmentId = treatmentRows[0].id;
-    } else {
-        const { rows: newTreatment } = await pool.query(
-            `INSERT INTO treatments (code, description, cost, created_at, updated_at)
-             VALUES ($1, $2, $3, NOW(), NOW())
-             RETURNING id`,
-            [row.treatment_code, row.treatment_description, row.treatment_cost]
-        );
+            let insuranceId;
 
-        treatmentId = newTreatment[0].id;
-    }
+            if (insuranceRows.length > 0) {
+                insuranceId = insuranceRows[0].id;
+            } else {
+                const { rows: newInsurance } = await pool.query(
+                    `INSERT INTO insurances (name, coverage_percentage, created_at, updated_at)
+                     VALUES ($1, $2, NOW(), NOW())
+                     RETURNING id`,
+                    [row.insurance_provider, row.coverage_percentage]
+                );
 
-    /* =========================
-       4️⃣ INSURANCE
-    ========================= */
+                insuranceId = newInsurance[0].id;
+            }
 
-    const { rows: insuranceRows } = await pool.query(
-        `SELECT id FROM insurances WHERE name = $1`,
-        [row.insurance_provider]
-    );
+            // ---- APPOINTMENT
+            await pool.query(
+                `INSERT INTO appointments (
+                    description,
+                    patients_id,
+                    doctor_id,
+                    treatment_id,
+                    insurance_id,
+                    appoinment_date,
+                    treatment_cost,
+                    amount_paid,
+                    created_at,
+                    updated_at
+                )
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW(),NOW())`,
+                [
+                    row.appointment_id,
+                    patientId,
+                    doctorId,
+                    treatmentId,
+                    insuranceId,
+                    row.appointment_date,
+                    row.treatment_cost,
+                    row.amount_paid
+                ]
+            );
+        }
 
-    let insuranceId;
+        // ================================
+        // MONGODB MIGRATION
+        // ================================
 
-    if (insuranceRows.length > 0) {
-        insuranceId = insuranceRows[0].id;
-    } else {
-        const { rows: newInsurance } = await pool.query(
-            `INSERT INTO insurances (name, coverage_percentage, created_at, updated_at)
-             VALUES ($1, $2, NOW(), NOW())
-             RETURNING id`,
-            [row.insurance_provider, row.coverage_percentage]
-        );
+        const historiesByEmail = {};
 
-        insuranceId = newInsurance[0].id;
-    }
+        for (const row of rows) {
 
-    /* =========================
-       5️⃣ APPOINTMENT
-    ========================= */
+            const email = row.patient_email.toLowerCase().trim();
 
-    if (!appointmentIds.has(row.appointment_id)) {
+            if (!historiesByEmail[email]) {
+                historiesByEmail[email] = {
+                    patientEmail: email,
+                    patientName: row.patient_name,
+                    appointments: []
+                };
+            }
 
-        await pool.query(
-            `INSERT INTO appointments (
-                description,
-                patients_id,
-                doctor_id,
-                treatment_id,
-                insurance_id,
-                appoinment_date,
-                treatment_cost,
-                amount_paid,
-                created_at,
-                updated_at
-            )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW(),NOW())`,
-            [
-                row.appointment_id,      // description
-                patientId,
-                doctorId,
-                treatmentId,
-                insuranceId,
-                row.appointment_date,
-                row.treatment_cost,
-                row.amount_paid
-            ]
-        );
+            historiesByEmail[email].appointments.push({
+                appointmentId: row.appointment_id,
+                date: row.appointment_date,
+                doctorName: row.doctor_name,
+                doctorEmail: row.doctor_email,
+                specialty: row.specialty,
+                treatmentCode: row.treatment_code,
+                treatmenDescription: row.treatment_description,
+                treatmentCost: Number(row.treatment_cost),
+                insuranceProvider: row.insurance_provider,
+                coveragePercentage: Number(row.coverage_percentage),
+                amountPaid: Number(row.amount_paid)
+            });
+        }
 
-        appointmentIds.add(row.appointment_id);
-    }
-}
+        for (const history of Object.values(historiesByEmail)) {
+            await PatientHistory.updateOne(
+                { patientEmail: history.patientEmail },
+                { $set: history },
+                { upsert: true }
+            );
+        }
 
-    }catch(error){
+        console.log("Migration completed successfully");
+
+    } catch (error) {
         console.error("Error migrating data:", error);
         throw error;
     }

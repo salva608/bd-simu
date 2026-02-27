@@ -2,11 +2,16 @@ import {createTables} from './config/postgres.js';
 import app from './app.js';
 import { env } from './config/env.js';
 import { migrate } from './services/migration_services.js';
+import { connectMongo } from './config/mongodb.js';
 
 try {
     console.log("Conecting to postgres...") 
     await createTables();
     console.log("connect to postgres successfully!") 
+
+    console.log("Connecting to MongoDB...");
+    await connectMongo();
+    console.log("Connected to MongoDB successfully!");
 
     console.log("migrating data...");
     await migrate(true);
