@@ -31,97 +31,83 @@ export async function migrate(clearBefore = false) {
             console.log('Previous MongoDB data cleared');
         }
 
-        // ================================
-        // POSTGRES MIGRATION
-        // ================================
-
         for (const row of rows) {
 
-            // ---- PATIENT
-            const { rows: patientRows } = await pool.query(
-                `SELECT id FROM patients WHERE email = $1`,
-                [row.patient_email]
-            );
+            const patientEmail = row.patient_email.toLowerCase().trim();
+            const doctorEmail = row.doctor_email.toLowerCase().trim();
 
+        
             let patientId;
 
-            if (patientRows.length > 0) {
-                patientId = patientRows[0].id;
-            } else {
-                const { rows: newPatient } = await pool.query(
-                    `INSERT INTO patients (email, name, phone, address, created_at, updated_at)
-                     VALUES ($1, $2, $3, $4, NOW(), NOW())
-                     RETURNING id`,
-                    [row.patient_email, row.patient_name, row.patient_phone, row.patient_address]
-                );
-
-                patientId = newPatient[0].id;
-            }
-
-            // ---- DOCTOR
-            const { rows: doctorRows } = await pool.query(
-                `SELECT id FROM doctors WHERE email = $1`,
-                [row.doctor_email]
+            const insertPatient = await pool.query(
+                `INSERT INTO patients (email, name, phone, address, created_at, updated_at)
+                 VALUES ($1, $2, $3, $4, NOW(), NOW())
+                 ON CONFLICT (email) DO NOTHING
+                 RETURNING id`,
+                [patientEmail, row.patient_name, row.patient_phone, row.patient_address]
             );
 
+            if (insertPatient.rows.length > 0) {
+                patientId = insertPatient.rows[0].id;
+            } else {
+                const { rows } = await pool.query(
+                    `SELECT id FROM patients WHERE email = $1`,
+                    [patientEmail]
+                );
+                patientId = rows[0].id;
+            }
+
+        
             let doctorId;
 
-            if (doctorRows.length > 0) {
-                doctorId = doctorRows[0].id;
-            } else {
-                const { rows: newDoctor } = await pool.query(
-                    `INSERT INTO doctors (email, name, specialty, created_at, updated_at)
-                     VALUES ($1, $2, $3, NOW(), NOW())
-                     RETURNING id`,
-                    [row.doctor_email, row.doctor_name, row.specialty]
-                );
-
-                doctorId = newDoctor[0].id;
-            }
-
-            // ---- TREATMENT
-            const { rows: treatmentRows } = await pool.query(
-                `SELECT id FROM treatments WHERE code = $1`,
-                [row.treatment_code]
+            const insertDoctor = await pool.query(
+                `INSERT INTO doctors (email, name, specialty, created_at, updated_at)
+                 VALUES ($1, $2, $3, NOW(), NOW())
+                 ON CONFLICT (email) DO NOTHING
+                 RETURNING id`,
+                [doctorEmail, row.doctor_name, row.specialty]
             );
 
-            let treatmentId;
-
-            if (treatmentRows.length > 0) {
-                treatmentId = treatmentRows[0].id;
+            if (insertDoctor.rows.length > 0) {
+                doctorId = insertDoctor.rows[0].id;
             } else {
-                const { rows: newTreatment } = await pool.query(
-                    `INSERT INTO treatments (code, description, cost, created_at, updated_at)
-                     VALUES ($1, $2, $3, NOW(), NOW())
-                     RETURNING id`,
-                    [row.treatment_code, row.treatment_description, row.treatment_cost]
+                const { rows } = await pool.query(
+                    `SELECT id FROM doctors WHERE email = $1`,
+                    [doctorEmail]
                 );
-
-                treatmentId = newTreatment[0].id;
+                doctorId = rows[0].id;
             }
 
-            // ---- INSURANCE
-            const { rows: insuranceRows } = await pool.query(
+        
+            await pool.query(
+                `INSERT INTO treatments (code, description, cost, created_at, updated_at)
+                 VALUES ($1, $2, $3, NOW(), NOW())
+                 ON CONFLICT (code) DO NOTHING`,
+                [row.treatment_code, row.treatment_description, parseInt(row.treatment_cost)]
+            );
+
+
+
+            await pool.query(
+                `INSERT INTO insurances (name, coverage_percentage, created_at, updated_at)
+                 VALUES ($1, $2, NOW(), NOW())
+                 ON CONFLICT (name) DO NOTHING`,
+                [row.insurance_provider, parseInt(row.coverage_percentage)]
+            );
+
+            const { rows: [insurance] } = await pool.query(
                 `SELECT id FROM insurances WHERE name = $1`,
                 [row.insurance_provider]
             );
 
-            let insuranceId;
+            const { rows: [treatment] } = await pool.query(
+                `SELECT id FROM treatments WHERE code = $1`,
+                [row.treatment_code]
+            );
 
-            if (insuranceRows.length > 0) {
-                insuranceId = insuranceRows[0].id;
-            } else {
-                const { rows: newInsurance } = await pool.query(
-                    `INSERT INTO insurances (name, coverage_percentage, created_at, updated_at)
-                     VALUES ($1, $2, NOW(), NOW())
-                     RETURNING id`,
-                    [row.insurance_provider, row.coverage_percentage]
-                );
+            
 
-                insuranceId = newInsurance[0].id;
-            }
 
-            // ---- APPOINTMENT
             await pool.query(
                 `INSERT INTO appointments (
                     description,
@@ -135,28 +121,26 @@ export async function migrate(clearBefore = false) {
                     created_at,
                     updated_at
                 )
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW(),NOW())`,
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW(),NOW())
+                ON CONFLICT (description) DO NOTHING`,
                 [
                     row.appointment_id,
                     patientId,
                     doctorId,
-                    treatmentId,
-                    insuranceId,
+                    treatment.id,
+                    insurance.id,
                     row.appointment_date,
-                    row.treatment_cost,
-                    row.amount_paid
+                    parseInt(row.treatment_cost),
+                    parseInt(row.amount_paid)
                 ]
             );
         }
 
-        // ================================
-        // MONGODB MIGRATION
-        // ================================
 
+        // MONGODB HISTORIES
         const historiesByEmail = {};
 
         for (const row of rows) {
-
             const email = row.patient_email.toLowerCase().trim();
 
             if (!historiesByEmail[email]) {
@@ -171,14 +155,14 @@ export async function migrate(clearBefore = false) {
                 appointmentId: row.appointment_id,
                 date: row.appointment_date,
                 doctorName: row.doctor_name,
-                doctorEmail: row.doctor_email,
+                doctorEmail: row.doctor_email.toLowerCase().trim(),
                 specialty: row.specialty,
                 treatmentCode: row.treatment_code,
-                treatmenDescription: row.treatment_description,
-                treatmentCost: Number(row.treatment_cost),
+                treatmentDescription: row.treatment_description,
+                treatmentCost: parseFloat(row.treatment_cost),
                 insuranceProvider: row.insurance_provider,
-                coveragePercentage: Number(row.coverage_percentage),
-                amountPaid: Number(row.amount_paid)
+                coveragePercentage: parseInt(row.coverage_percentage),
+                amountPaid: parseFloat(row.amount_paid)
             });
         }
 
@@ -190,7 +174,32 @@ export async function migrate(clearBefore = false) {
             );
         }
 
-        console.log("Migration completed successfully");
+
+        // STATISTICS
+        const { rows: [{ count: pCount }] } = await pool.query('SELECT COUNT(*) FROM patients');
+        const { rows: [{ count: dCount }] } = await pool.query('SELECT COUNT(*) FROM doctors');
+        const { rows: [{ count: tCount }] } = await pool.query('SELECT COUNT(*) FROM treatments');
+        const { rows: [{ count: iCount }] } = await pool.query('SELECT COUNT(*) FROM insurances');
+        const { rows: [{ count: aCount }] } = await pool.query('SELECT COUNT(*) FROM appointments');
+        const hCount = await PatientHistory.countDocuments();
+
+        console.log("===== Migration Stats =====");
+        console.log("Patients:", pCount);
+        console.log("Doctors:", dCount);
+        console.log("Treatments:", tCount);
+        console.log("Insurances:", iCount);
+        console.log("Appointments:", aCount);
+        console.log("Histories (Mongo):", hCount);
+
+        return {
+            patients: parseInt(pCount),
+            doctors: parseInt(dCount),
+            treatments: parseInt(tCount),
+            insurances: parseInt(iCount),
+            appointments: parseInt(aCount),
+            histories: hCount,
+            csvPath
+        };
 
     } catch (error) {
         console.error("Error migrating data:", error);
