@@ -1,3 +1,10 @@
+/**
+ * ARCHIVO: app.js
+ * DESCRIPCIÓN: Define todas las rutas (endpoints) de la API REST del sistema SaludPlus.
+ * Este archivo contiene los endpoints para consultar y gestionar doctores, pacientes,
+ * historial de citas, reportes de ingresos, y más. Integra tanto PostgreSQL como MongoDB.
+ */
+
 import express from 'express';
 import { pool } from './config/postgres.js';
 import { PatientHistory } from './config/mongodb.js';
@@ -6,9 +13,12 @@ const app = express();
 
 app.use(express.json());
 
-/* =========================
-   GET ALL DOCTORS
-========================= */
+// ============================================
+// FUNCIÓN: GET /api/doctors
+// DESCRIPCIÓN: Obtiene la lista de todos los doctores.
+// Parámetros opcionales: specialty (especialidad del doctor)
+// Retorna: Array de doctores o filtrados por especialidad
+// ============================================
 app.get('/api/doctors', async (req, res) => {
   const { specialty } = req.query;
 
@@ -26,9 +36,12 @@ app.get('/api/doctors', async (req, res) => {
   });
 });
 
-/* =========================
-   GET DOCTOR BY ID
-========================= */
+// ============================================
+// FUNCIÓN: GET /api/doctors/:id
+// DESCRIPCIÓN: Obtiene los detalles de un doctor específico por su ID.
+// Parámetro: id (ID único del doctor)
+// Retorna: Datos del doctor o error 404 si no existe
+// ============================================
 app.get('/api/doctors/:id', async (req, res) => {
   const result = await pool.query(
     'SELECT * FROM doctors WHERE id = $1',
@@ -48,9 +61,15 @@ app.get('/api/doctors/:id', async (req, res) => {
   });
 });
 
-/* =========================
-   UPDATE DOCTOR (SQL + Mongo)
-========================= */
+// ============================================
+// FUNCIÓN: PUT /api/doctors/:id
+// DESCRIPCIÓN: Actualiza los datos de un doctor por su ID.
+// También sincroniza los cambios en MongoDB para mantener
+// la consistencia de datos entre las dos bases de datos.
+// Parámetros: id (ID del doctor a actualizar)
+// Body: { name, email, specialty }
+// Retorna: Doctor actualizado
+// ============================================
 app.put('/api/doctors/:id', async (req, res) => {
   const { name, email, specialty } = req.body;
 
@@ -95,9 +114,12 @@ app.put('/api/doctors/:id', async (req, res) => {
   });
 });
 
-/* =========================
-   REVENUE REPORT (SQL)
-========================= */
+// ============================================
+// FUNCIÓN: GET /api/reports/revenue
+// DESCRIPCIÓN: Genera un reporte de ingresos por citas y seguros.
+// Parámetros opcionales: startDate, endDate (para filtrar por rango de fechas)
+// Retorna: Ingresos totales y desglose por compañía de seguros
+// ============================================
 app.get('/api/reports/revenue', async (req, res) => {
   const { startDate, endDate } = req.query;
 
@@ -130,9 +152,13 @@ app.get('/api/reports/revenue', async (req, res) => {
   });
 });
 
-/* =========================
-   PATIENT HISTORY (Mongo)
-========================= */
+// ============================================
+// FUNCIÓN: GET /api/patients/:email/history
+// DESCRIPCIÓN: Obtiene el historial completo de citas de un paciente
+// desde MongoDB. Incluye todos los detalles de las citas del paciente.
+// Parámetro: email (Email único del paciente)
+// Retorna: Datos del paciente y array de todas sus citas
+// ============================================
 app.get('/api/patients/:email/history', async (req, res) => {
   const history = await PatientHistory.findOne({
     patientEmail: req.params.email
